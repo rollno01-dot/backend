@@ -55,7 +55,11 @@ const allowedOrigins = [
   'http://192.168.1.4:5000',           // ← ADDED: Local network IP
   'http://api.sevai.in:5000',          // ← ADDED: Your domain
   'http://sevai.in:5000',              // ← ADDED: Root domain
-  'http://120.56.90.113:5000',         // ← ADDED: Your public IP
+  'http://120.56.90.113:5000',
+  'https://sevai.in',
+  'https://www.sevai.in',
+  'https://api.sevai.in',
+  'https://sevai-api.onrender.com',         // ← ADDED: Your public IP
   process.env.CLIENT_URL
 ].filter(Boolean);
 
