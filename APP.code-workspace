@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../HealthCare-admin"
+		}
+	],
+	"settings": {
+		"git.ignoreLimitWarning": true
+	}
+}
