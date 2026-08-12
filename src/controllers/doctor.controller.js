@@ -22,9 +22,39 @@ const setNoCacheHeaders = (res) => {
 
 // ============== HELPER FUNCTIONS ==============
 
+// ============== FIXED: getFullImageUrl ==============
+const getFullImageUrl = (imagePath) => {
+  if (!imagePath) return null;
+  
+  // If it's already a full URL, return as is
+  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+    return imagePath;
+  }
+  
+  // Remove leading slash if exists
+  let cleanPath = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
+  
+  // For production on Render
+  if (process.env.NODE_ENV === 'production') {
+    const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
+    return `${baseUrl}/${cleanPath}`;
+  }
+  
+  // For development
+  const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
+  return `${baseUrl}/${cleanPath}`;
+};
+
+// ============== FIXED: formatImageUrl ==============
 const formatImageUrl = (imagePath, req) => {
   if (!imagePath) return null;
   
+  // If it's already a full URL, return as is
+  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+    return imagePath;
+  }
+  
+  // If it's a placeholder or invalid
   if (imagePath.includes('via.placeholder.com') || 
       imagePath.includes('placeholder') ||
       imagePath === 'No image' ||
@@ -33,21 +63,24 @@ const formatImageUrl = (imagePath, req) => {
     return null;
   }
   
-  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-    return imagePath;
+  // Remove leading slash
+  let cleanPath = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
+  
+  // For production on Render
+  if (process.env.NODE_ENV === 'production') {
+    const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
+    return `${baseUrl}/${cleanPath}`;
   }
   
+  // For development
   const baseUrl = process.env.BASE_URL || (req ? `${req.protocol}://${req.get('host')}` : 'http://localhost:5000');
   
-  let cleanPath = imagePath;
-  if (cleanPath.startsWith('/')) {
-    cleanPath = cleanPath.substring(1);
-  }
-  
+  // If it's a full path with uploads
   if (cleanPath.startsWith('uploads/')) {
     return `${baseUrl}/${cleanPath}`;
   }
   
+  // If it's just a filename
   if (!cleanPath.includes('/')) {
     return `${baseUrl}/uploads/profiles/${cleanPath}`;
   }
@@ -250,11 +283,10 @@ exports.getDoctorsList = async (req, res, next) => {
       const stats = calculateRatingDistribution(reviews);
       const formattedImage = formatImageUrl(doctor.profileImage, req);
       
-      // ============ FIXED: Proper availability check ============
+      // Check availability
       const today = new Date().toLocaleDateString('en-US', { weekday: 'long' });
       let isAvailableToday = false;
       
-      // Check 1: Check if doctor has timeSlots for today
       if (doctor.timeSlots && Array.isArray(doctor.timeSlots)) {
         const todaySlot = doctor.timeSlots.find(slot => slot.day === today);
         if (todaySlot && todaySlot.slots && todaySlot.slots.length > 0) {
@@ -262,14 +294,12 @@ exports.getDoctorsList = async (req, res, next) => {
         }
       }
       
-      // Check 2: Check availableDays if timeSlots is not set
       if (!isAvailableToday && doctor.availableDays && Array.isArray(doctor.availableDays)) {
         if (doctor.availableDays.includes(today)) {
           isAvailableToday = true;
         }
       }
       
-      // Check 3: Check weeklySchedule if available
       if (!isAvailableToday && doctor.weeklySchedule) {
         const dayOfWeek = today.toLowerCase();
         if (doctor.weeklySchedule[dayOfWeek] && doctor.weeklySchedule[dayOfWeek].enabled === true) {
@@ -277,7 +307,6 @@ exports.getDoctorsList = async (req, res, next) => {
         }
       }
       
-      // Check 4: If still not available, check if doctor has any schedule at all
       if (!isAvailableToday) {
         const hasWorkingDays = (doctor.availableDays && doctor.availableDays.length > 0) ||
                                (doctor.timeSlots && doctor.timeSlots.length > 0) ||
@@ -753,15 +782,24 @@ exports.getDoctorProfile = async (req, res, next) => {
   }
 };
 
-// Update doctor profile
+// ============== FIXED: Update doctor profile ==============
 exports.updateDoctorProfile = async (req, res, next) => {
   try {
     setNoCacheHeaders(res);
     
     const updateData = { ...req.body, updatedAt: new Date() };
     
+    // ✅ FIX: Save full URL when updating profile
     if (req.file) {
-      updateData.profileImage = `/uploads/profiles/${req.file.filename}`;
+      const relativePath = `/uploads/profiles/${req.file.filename}`;
+      
+      if (process.env.NODE_ENV === 'production') {
+        const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
+        updateData.profileImage = `${baseUrl}${relativePath}`;
+      } else {
+        const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
+        updateData.profileImage = `${baseUrl}${relativePath}`;
+      }
     }
     
     const doctor = await Doctor.findOneAndUpdate(
@@ -775,7 +813,8 @@ exports.updateDoctorProfile = async (req, res, next) => {
     }
 
     const doctorResponse = doctor.toObject();
-    doctorResponse.profileImage = formatImageUrl(doctorResponse.profileImage, req);
+    // ✅ Use the saved URL directly (it's already a full URL)
+    doctorResponse.profileImage = doctorResponse.profileImage;
 
     res.status(200).json({ 
       success: true, 
@@ -789,7 +828,7 @@ exports.updateDoctorProfile = async (req, res, next) => {
   }
 };
 
-// ============== IMAGE UPLOAD METHODS ==============
+// ============== FIXED: IMAGE UPLOAD METHODS ==============
 
 exports.uploadProfileImage = async (req, res, next) => {
   try {
@@ -805,24 +844,43 @@ exports.uploadProfileImage = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Doctor profile not found' });
     }
 
+    // Delete old image if exists
     if (doctor.profileImage && 
         !doctor.profileImage.includes('placeholder') &&
         doctor.profileImage !== 'No image' &&
         doctor.profileImage !== 'null') {
-      const oldImagePath = path.join(__dirname, '../..', doctor.profileImage);
-      if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
+      try {
+        const oldImagePath = path.join(__dirname, '../..', doctor.profileImage.replace(/^https?:\/\/[^\/]+\//, ''));
+        if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
+      } catch (e) {
+        // If it's a URL, just ignore
+      }
     }
 
-    const imagePath = `/uploads/profiles/${req.file.filename}`;
-    doctor.profileImage = imagePath;
+    // ✅ FIX: Save the FULL URL, not just the relative path
+    const relativePath = `/uploads/profiles/${req.file.filename}`;
+    
+    let fullImageUrl;
+    if (process.env.NODE_ENV === 'production') {
+      const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
+      fullImageUrl = `${baseUrl}${relativePath}`;
+    } else {
+      const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
+      fullImageUrl = `${baseUrl}${relativePath}`;
+    }
+
+    // ✅ Save the FULL URL to database
+    doctor.profileImage = fullImageUrl;
     doctor.updatedAt = new Date();
     await doctor.save();
 
-    const fullImageUrl = formatImageUrl(imagePath, req);
-
     res.status(200).json({
       success: true,
-      data: { profileImage: fullImageUrl, imagePath: imagePath, filename: req.file.filename },
+      data: { 
+        profileImage: fullImageUrl,  // ✅ Return full URL
+        imagePath: relativePath, 
+        filename: req.file.filename 
+      },
       message: 'Profile image uploaded successfully',
       timestamp: new Date().toISOString()
     });
@@ -1729,41 +1787,6 @@ exports.getMyProfile = async (req, res, next) => {
 };
 
 // ============== UPDATE MY PROFILE ==============
-
-exports.updateMyProfile = async (req, res, next) => {
-  try {
-    setNoCacheHeaders(res);
-    
-    const updateData = { ...req.body, updatedAt: new Date() };
-    
-    if (req.file) {
-      updateData.profileImage = `/uploads/profiles/${req.file.filename}`;
-    }
-    
-    const doctor = await Doctor.findOneAndUpdate(
-      { userId: req.user.userId },
-      updateData,
-      { new: true, runValidators: true }
-    ).populate('userId', 'fullName email phoneNumber');
-    
-    if (!doctor) {
-      return res.status(404).json({ success: false, message: 'Doctor profile not found' });
-    }
-    
-    const doctorResponse = doctor.toObject();
-    doctorResponse.profileImage = formatImageUrl(doctorResponse.profileImage, req);
-    
-    res.status(200).json({
-      success: true,
-      message: 'Profile updated successfully',
-      data: doctorResponse,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error in updateMyProfile:', error);
-    next(error);
-  }
-};
 
 // ============== GET MY APPOINTMENTS BY DATE ==============
 
