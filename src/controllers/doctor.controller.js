@@ -1,4 +1,4 @@
-// Backend/src/controllers/doctor.controller.js - COMPLETE FIXED VERSION
+// Backend/src/controllers/doctor.controller.js - COMPLETE FIXED VERSION WITH CLOUDINARY
 const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
@@ -11,6 +11,7 @@ const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment');
+const cloudinary = require('../config/cloudinary');
 
 // ================= NO-CACHE HELPER =================
 const setNoCacheHeaders = (res) => {
@@ -22,39 +23,9 @@ const setNoCacheHeaders = (res) => {
 
 // ============== HELPER FUNCTIONS ==============
 
-// ============== FIXED: getFullImageUrl ==============
-const getFullImageUrl = (imagePath) => {
-  if (!imagePath) return null;
-  
-  // If it's already a full URL, return as is
-  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-    return imagePath;
-  }
-  
-  // Remove leading slash if exists
-  let cleanPath = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
-  
-  // For production on Render
-  if (process.env.NODE_ENV === 'production') {
-    const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
-    return `${baseUrl}/${cleanPath}`;
-  }
-  
-  // For development
-  const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
-  return `${baseUrl}/${cleanPath}`;
-};
-
-// ============== FIXED: formatImageUrl ==============
 const formatImageUrl = (imagePath, req) => {
   if (!imagePath) return null;
   
-  // If it's already a full URL, return as is
-  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-    return imagePath;
-  }
-  
-  // If it's a placeholder or invalid
   if (imagePath.includes('via.placeholder.com') || 
       imagePath.includes('placeholder') ||
       imagePath === 'No image' ||
@@ -63,24 +34,22 @@ const formatImageUrl = (imagePath, req) => {
     return null;
   }
   
-  // Remove leading slash
-  let cleanPath = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
-  
-  // For production on Render
-  if (process.env.NODE_ENV === 'production') {
-    const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
-    return `${baseUrl}/${cleanPath}`;
+  // If it's already a full URL (Cloudinary or other), return as is
+  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+    return imagePath;
   }
   
-  // For development
   const baseUrl = process.env.BASE_URL || (req ? `${req.protocol}://${req.get('host')}` : 'http://localhost:5000');
   
-  // If it's a full path with uploads
+  let cleanPath = imagePath;
+  if (cleanPath.startsWith('/')) {
+    cleanPath = cleanPath.substring(1);
+  }
+  
   if (cleanPath.startsWith('uploads/')) {
     return `${baseUrl}/${cleanPath}`;
   }
   
-  // If it's just a filename
   if (!cleanPath.includes('/')) {
     return `${baseUrl}/uploads/profiles/${cleanPath}`;
   }
@@ -782,23 +751,42 @@ exports.getDoctorProfile = async (req, res, next) => {
   }
 };
 
-// ============== FIXED: Update doctor profile ==============
+// ============== FIXED: Update doctor profile with Cloudinary ==============
 exports.updateDoctorProfile = async (req, res, next) => {
   try {
     setNoCacheHeaders(res);
     
     const updateData = { ...req.body, updatedAt: new Date() };
     
-    // ✅ FIX: Save full URL when updating profile
+    // If file is uploaded, upload to Cloudinary
     if (req.file) {
-      const relativePath = `/uploads/profiles/${req.file.filename}`;
-      
-      if (process.env.NODE_ENV === 'production') {
-        const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
-        updateData.profileImage = `${baseUrl}${relativePath}`;
-      } else {
-        const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
-        updateData.profileImage = `${baseUrl}${relativePath}`;
+      try {
+        const doctor = await Doctor.findOne({ userId: req.user.userId });
+        if (doctor) {
+          // Upload to Cloudinary
+          const result = await cloudinary.uploader.upload(req.file.path, {
+            folder: 'doctor_appointment/doctors',
+            public_id: `doctor_${doctor._id}_${Date.now()}`,
+            transformation: [
+              { width: 500, height: 500, crop: 'limit' },
+              { quality: 'auto' }
+            ]
+          });
+
+          // Delete local file
+          if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+          }
+
+          updateData.profileImage = result.secure_url;
+          updateData.cloudinaryPublicId = result.public_id;
+        }
+      } catch (cloudinaryError) {
+        console.error('Cloudinary upload error:', cloudinaryError);
+        if (req.file && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+        throw cloudinaryError;
       }
     }
     
@@ -813,8 +801,7 @@ exports.updateDoctorProfile = async (req, res, next) => {
     }
 
     const doctorResponse = doctor.toObject();
-    // ✅ Use the saved URL directly (it's already a full URL)
-    doctorResponse.profileImage = doctorResponse.profileImage;
+    doctorResponse.profileImage = formatImageUrl(doctorResponse.profileImage, req);
 
     res.status(200).json({ 
       success: true, 
@@ -828,7 +815,7 @@ exports.updateDoctorProfile = async (req, res, next) => {
   }
 };
 
-// ============== FIXED: IMAGE UPLOAD METHODS ==============
+// ============== FIXED: IMAGE UPLOAD WITH CLOUDINARY ==============
 
 exports.uploadProfileImage = async (req, res, next) => {
   try {
@@ -844,46 +831,48 @@ exports.uploadProfileImage = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Doctor profile not found' });
     }
 
-    // Delete old image if exists
-    if (doctor.profileImage && 
-        !doctor.profileImage.includes('placeholder') &&
-        doctor.profileImage !== 'No image' &&
-        doctor.profileImage !== 'null') {
-      try {
-        const oldImagePath = path.join(__dirname, '../..', doctor.profileImage.replace(/^https?:\/\/[^\/]+\//, ''));
-        if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
-      } catch (e) {
-        // If it's a URL, just ignore
+    try {
+      // ✅ Upload to Cloudinary
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'doctor_appointment/doctors',
+        public_id: `doctor_${doctor._id}_${Date.now()}`,
+        transformation: [
+          { width: 500, height: 500, crop: 'limit' },
+          { quality: 'auto' }
+        ]
+      });
+
+      // ✅ Delete local file after upload
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
       }
+
+      // ✅ Save Cloudinary URL to database
+      doctor.profileImage = result.secure_url;
+      doctor.cloudinaryPublicId = result.public_id;
+      doctor.updatedAt = new Date();
+      await doctor.save();
+
+      res.status(200).json({
+        success: true,
+        data: {
+          profileImage: result.secure_url,
+          public_id: result.public_id,
+          filename: req.file.filename
+        },
+        message: 'Profile image uploaded successfully',
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (cloudinaryError) {
+      console.error('❌ Cloudinary upload error:', cloudinaryError);
+      // Delete local file if Cloudinary fails
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      throw cloudinaryError;
     }
 
-    // ✅ FIX: Save the FULL URL, not just the relative path
-    const relativePath = `/uploads/profiles/${req.file.filename}`;
-    
-    let fullImageUrl;
-    if (process.env.NODE_ENV === 'production') {
-      const baseUrl = process.env.BASE_URL || 'https://backend-1-mx86.onrender.com';
-      fullImageUrl = `${baseUrl}${relativePath}`;
-    } else {
-      const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
-      fullImageUrl = `${baseUrl}${relativePath}`;
-    }
-
-    // ✅ Save the FULL URL to database
-    doctor.profileImage = fullImageUrl;
-    doctor.updatedAt = new Date();
-    await doctor.save();
-
-    res.status(200).json({
-      success: true,
-      data: { 
-        profileImage: fullImageUrl,  // ✅ Return full URL
-        imagePath: relativePath, 
-        filename: req.file.filename 
-      },
-      message: 'Profile image uploaded successfully',
-      timestamp: new Date().toISOString()
-    });
   } catch (error) {
     console.error('❌ Error uploading profile image:', error);
     if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
@@ -905,22 +894,42 @@ exports.uploadDocuments = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Doctor profile not found' });
     }
 
-    const uploadedDocuments = req.files.map(file => ({
-      url: `/uploads/documents/${file.filename}`,
-      name: file.originalname,
-      type: file.mimetype,
-      size: file.size,
-      uploadedAt: new Date()
-    }));
+    const uploadedDocuments = [];
+    for (const file of req.files) {
+      try {
+        // Upload to Cloudinary
+        const result = await cloudinary.uploader.upload(file.path, {
+          folder: 'doctor_appointment/documents',
+          resource_type: 'auto'
+        });
+
+        // Delete local file
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+
+        uploadedDocuments.push({
+          url: result.secure_url,
+          public_id: result.public_id,
+          name: file.originalname,
+          type: file.mimetype,
+          size: file.size,
+          uploadedAt: new Date()
+        });
+      } catch (cloudinaryError) {
+        console.error('Cloudinary upload error for document:', cloudinaryError);
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      }
+    }
 
     doctor.documents = [...(doctor.documents || []), ...uploadedDocuments];
     await doctor.save();
 
-    const formattedDocuments = uploadedDocuments.map(doc => ({ ...doc, url: formatImageUrl(doc.url, req) }));
-
     res.status(200).json({
       success: true,
-      data: formattedDocuments,
+      data: uploadedDocuments,
       message: `${uploadedDocuments.length} document(s) uploaded successfully`,
       timestamp: new Date().toISOString()
     });
@@ -950,8 +959,14 @@ exports.deleteDocument = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Document not found' });
     }
 
-    const filePath = path.join(__dirname, '../..', decodedUrl);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    // Delete from Cloudinary if public_id exists
+    if (doctor.documents[documentIndex].public_id) {
+      try {
+        await cloudinary.uploader.destroy(doctor.documents[documentIndex].public_id);
+      } catch (cloudinaryError) {
+        console.error('Cloudinary delete error:', cloudinaryError);
+      }
+    }
 
     doctor.documents.splice(documentIndex, 1);
     await doctor.save();
@@ -1787,6 +1802,65 @@ exports.getMyProfile = async (req, res, next) => {
 };
 
 // ============== UPDATE MY PROFILE ==============
+
+exports.updateMyProfile = async (req, res, next) => {
+  try {
+    setNoCacheHeaders(res);
+    
+    const updateData = { ...req.body, updatedAt: new Date() };
+    
+    if (req.file) {
+      try {
+        const doctor = await Doctor.findOne({ userId: req.user.userId });
+        if (doctor) {
+          const result = await cloudinary.uploader.upload(req.file.path, {
+            folder: 'doctor_appointment/doctors',
+            public_id: `doctor_${doctor._id}_${Date.now()}`,
+            transformation: [
+              { width: 500, height: 500, crop: 'limit' },
+              { quality: 'auto' }
+            ]
+          });
+
+          if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+          }
+
+          updateData.profileImage = result.secure_url;
+          updateData.cloudinaryPublicId = result.public_id;
+        }
+      } catch (cloudinaryError) {
+        console.error('Cloudinary upload error:', cloudinaryError);
+        if (req.file && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+      }
+    }
+    
+    const doctor = await Doctor.findOneAndUpdate(
+      { userId: req.user.userId },
+      updateData,
+      { new: true, runValidators: true }
+    ).populate('userId', 'fullName email phoneNumber');
+    
+    if (!doctor) {
+      return res.status(404).json({ success: false, message: 'Doctor profile not found' });
+    }
+    
+    const doctorResponse = doctor.toObject();
+    doctorResponse.profileImage = formatImageUrl(doctorResponse.profileImage, req);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: doctorResponse,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error in updateMyProfile:', error);
+    next(error);
+  }
+};
 
 // ============== GET MY APPOINTMENTS BY DATE ==============
 
