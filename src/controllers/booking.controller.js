@@ -39,12 +39,16 @@ const minutesToTime = (minutes) => {
   return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
 };
 
+// ✅ FIXED: generateSlots - stores date as STRING
 const generateSlots = (date, startTime, endTime, totalSlotsCount) => {
   const slots = [];
   const startMinutes = timeToMinutes(startTime);
   const endMinutes = timeToMinutes(endTime);
   const totalMinutes = endMinutes - startMinutes;
   const slotDuration = totalMinutes / totalSlotsCount;
+  
+  // Ensure date is string YYYY-MM-DD
+  const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date;
   
   for (let i = 1; i <= totalSlotsCount; i++) {
     const start = startMinutes + (i - 1) * slotDuration;
@@ -56,9 +60,9 @@ const generateSlots = (date, startTime, endTime, totalSlotsCount) => {
     
     slots.push({
       slotNumber: i,
-      startTime: startTimeStr,  // ✅ FIX: Always has a value
-      endTime: endTimeStr,      // ✅ FIX: Always has a value
-      date: date,
+      startTime: startTimeStr,
+      endTime: endTimeStr,
+      date: dateStr,  // ✅ Store as STRING
       isAvailable: true,
       isBooked: false,
       status: 'available',
@@ -157,36 +161,28 @@ exports.getAvailableSlots = async (req, res) => {
       });
     }
     
-    // ✅ FIX: Get slots with proper date range
-    const startDate = moment(selectedDate).startOf('day').toDate();
-    const endDate = moment(selectedDate).endOf('day').toDate();
-    
+    // ✅ FIXED: Query with STRING date (since Slot.date is now String)
     let slots = await Slot.find({
       doctorId: doctorId,
-      date: {
-        $gte: startDate,
-        $lt: endDate
-      }
+      date: selectedDate  // ✅ Direct string match
     }).sort('slotNumber');
     
-    // ✅ FIX: If no slots or wrong count, regenerate with proper startTime
+    // ✅ FIXED: If no slots or wrong count, regenerate with proper string date
     if (slots.length !== totalSlotsCount) {
+      // ✅ FIXED: Delete with string date
       await Slot.deleteMany({
         doctorId: doctorId,
-        date: {
-          $gte: startDate,
-          $lt: endDate
-        }
+        date: selectedDate  // ✅ String match
       });
       
       const generatedSlots = generateSlots(selectedDate, openTime, closeTime, totalSlotsCount);
       
       const slotDocs = generatedSlots.map(slot => ({
         doctorId: doctorId,
-        date: new Date(slot.date),
+        date: slot.date,  // ✅ Already string from generateSlots
         slotNumber: slot.slotNumber,
-        startTime: slot.startTime,    // ✅ FIX: Always has value
-        endTime: slot.endTime,        // ✅ FIX: Always has value
+        startTime: slot.startTime,
+        endTime: slot.endTime,
         duration: timeToMinutes(slot.endTime) - timeToMinutes(slot.startTime),
         isAvailable: true,
         isBooked: false,
@@ -198,12 +194,10 @@ exports.getAvailableSlots = async (req, res) => {
       }
     }
     
+    // ✅ FIXED: Query bookings with string date
     const bookedAppointments = await Booking.find({
       doctorId: doctorId,
-      date: {
-        $gte: startDate,
-        $lt: endDate
-      },
+      date: selectedDate,  // ✅ String match
       status: { $in: ['confirmed', 'pending'] }
     });
     
@@ -331,15 +325,18 @@ exports.bookAppointment = async (req, res) => {
       });
     }
 
-    // ✅ FIX: Extract startTime from timeSlot if not provided
+    // Extract startTime from timeSlot if not provided
     const timeSlotParts = timeSlot.split('-');
     const slotStartTime = timeSlotParts[0]?.trim() || startTime || '09:00';
     const slotEndTime = timeSlotParts[1]?.trim() || endTime || '09:30';
+    
+    // ✅ Ensure date is string YYYY-MM-DD
+    const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date.split('T')[0];
 
-    // ✅ FIX: Check for existing booking with same slot
+    // ✅ FIXED: Check for existing booking with same slot using string date
     const existingBooking = await Booking.findOne({
       doctorId: doctorId,
-      date: date,
+      date: dateStr,  // ✅ String match
       slotNumber: parseInt(slotNumber) || 1,
       status: { $nin: ['cancelled', 'completed'] }
     });
@@ -351,16 +348,10 @@ exports.bookAppointment = async (req, res) => {
       });
     }
 
-    // ✅ FIX: Also check in Slot collection
-    const startDate = moment(date).startOf('day').toDate();
-    const endDate = moment(date).endOf('day').toDate();
-    
+    // ✅ FIXED: Check in Slot collection using string date
     const existingSlot = await Slot.findOne({
       doctorId: doctorId,
-      date: {
-        $gte: startDate,
-        $lt: endDate
-      },
+      date: dateStr,  // ✅ String match
       slotNumber: parseInt(slotNumber) || 1,
       isBooked: true
     });
@@ -379,12 +370,12 @@ exports.bookAppointment = async (req, res) => {
       doctorName: doctorName || doctor.fullName || doctor.name,
       patientName: patientName || patient.fullName || patient.name,
       patientPhone: patientPhone || patient.phoneNumber || patient.phone,
-      date: date,
-      bookingDate: moment(date).startOf('day').toDate(),
+      date: dateStr,  // ✅ String date
+      bookingDate: moment(dateStr).startOf('day').toDate(),
       timeSlot: timeSlot,
       slotNumber: parseInt(slotNumber) || 1,
-      startTime: slotStartTime,    // ✅ FIX: Always has value
-      endTime: slotEndTime,        // ✅ FIX: Always has value
+      startTime: slotStartTime,
+      endTime: slotEndTime,
       expectedTime: expectedTime || `${formatTimeDisplay(slotStartTime)} - ${formatTimeDisplay(slotEndTime)}`,
       peopleAhead: parseInt(peopleAhead) || 0,
       amount: amount || doctor.consultationFee || 500,
@@ -402,14 +393,11 @@ exports.bookAppointment = async (req, res) => {
 
     console.log('✅ Booking saved:', booking._id);
 
-    // ✅ FIX: Update or create slot with proper startTime
+    // ✅ FIXED: Update slot with string date
     await Slot.findOneAndUpdate(
       {
         doctorId: doctorId,
-        date: {
-          $gte: startDate,
-          $lt: endDate
-        },
+        date: dateStr,  // ✅ String match
         slotNumber: parseInt(slotNumber) || 1
       },
       {
@@ -418,8 +406,8 @@ exports.bookAppointment = async (req, res) => {
           isAvailable: false,
           status: 'booked',
           bookingId: booking._id,
-          startTime: slotStartTime,    // ✅ FIX: Always has value
-          endTime: slotEndTime,        // ✅ FIX: Always has value
+          startTime: slotStartTime,
+          endTime: slotEndTime,
           patientId: patientId,
           patientName: patientName || patient.fullName || patient.name
         }
@@ -440,7 +428,6 @@ exports.bookAppointment = async (req, res) => {
   } catch (error) {
     console.error('❌ Error booking appointment:', error);
     
-    // ✅ FIX: Handle duplicate key error specifically
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -556,15 +543,11 @@ exports.getDoctorBookings = async (req, res) => {
     
     const { date, status } = req.query;
     
-    let query = { 
-      doctorId: doctorId
-    };
+    let query = { doctorId: doctorId };
     
     if (date) {
-      query.date = {
-        $gte: moment(date).startOf('day').toDate(),
-        $lt: moment(date).endOf('day').toDate()
-      };
+      const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date.split('T')[0];
+      query.date = dateStr;  // ✅ String match
     }
     
     if (status && status !== 'all') {
@@ -655,12 +638,11 @@ exports.getBookingsByDate = async (req, res) => {
       });
     }
 
+    const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date.split('T')[0];
+
     const query = {
       doctorId: doctorId,
-      date: {
-        $gte: moment(date).startOf('day').toDate(),
-        $lt: moment(date).endOf('day').toDate()
-      },
+      date: dateStr,  // ✅ String match
       status: { $ne: 'cancelled' }
     };
 
@@ -764,16 +746,11 @@ exports.cancelBooking = async (req, res) => {
     booking.cancellationReason = req.body.reason || 'Cancelled by user';
     await booking.save();
 
-    const startDate = moment(booking.date).startOf('day').toDate();
-    const endDate = moment(booking.date).endOf('day').toDate();
-
+    // ✅ FIXED: Update slot with string date
     await Slot.findOneAndUpdate(
       {
         doctorId: booking.doctorId,
-        date: {
-          $gte: startDate,
-          $lt: endDate
-        },
+        date: booking.date,  // ✅ String match
         slotNumber: booking.slotNumber
       },
       {
@@ -853,6 +830,8 @@ exports.addOfflineAppointment = async (req, res) => {
       finalEndTime = parts[1]?.trim() || '09:30';
     }
 
+    const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date.split('T')[0];
+
     const booking = new Booking({
       doctorId,
       patientId: user._id,
@@ -860,8 +839,8 @@ exports.addOfflineAppointment = async (req, res) => {
       doctorName: doctor.fullName || doctor.name,
       patientName,
       patientPhone,
-      date: date,
-      bookingDate: moment(date).startOf('day').toDate(),
+      date: dateStr,  // ✅ String date
+      bookingDate: moment(dateStr).startOf('day').toDate(),
       timeSlot: finalTimeSlot,
       slotNumber: parseInt(slotNumber) || 1,
       startTime: finalStartTime,
@@ -875,6 +854,28 @@ exports.addOfflineAppointment = async (req, res) => {
     });
 
     await booking.save();
+
+    // ✅ FIXED: Update slot with string date
+    await Slot.findOneAndUpdate(
+      {
+        doctorId: doctorId,
+        date: dateStr,  // ✅ String match
+        slotNumber: parseInt(slotNumber) || 1
+      },
+      {
+        $set: {
+          isBooked: true,
+          isAvailable: false,
+          status: 'booked',
+          bookingId: booking._id,
+          startTime: finalStartTime,
+          endTime: finalEndTime,
+          patientId: user._id,
+          patientName: patientName
+        }
+      },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
 
     console.log(`✅ Offline appointment created: ${booking._id}`);
 
@@ -1111,7 +1112,17 @@ exports.setMyTiming = async (req, res) => {
     }
     
     await schedule.save();
-    await Slot.deleteMany({ doctorId });
+    
+    // ✅ FIXED: Delete slots with string date
+    // Get all dates that need to be regenerated
+    const today = moment().format('YYYY-MM-DD');
+    const futureDate = moment().add(30, 'days').format('YYYY-MM-DD');
+    
+    // Delete all future slots
+    await Slot.deleteMany({ 
+      doctorId: doctorId,
+      date: { $gte: today }
+    });
     
     res.status(200).json({
       success: true,
@@ -1150,7 +1161,12 @@ exports.saveDoctorSchedule = async (req, res) => {
     schedule.updatedAt = new Date();
     
     await schedule.save();
-    await Slot.deleteMany({ doctorId });
+    
+    // ✅ FIXED: Delete slots with string date
+    await Slot.deleteMany({ 
+      doctorId: doctorId,
+      date: { $gte: moment().format('YYYY-MM-DD') }
+    });
     
     res.status(200).json({
       success: true,
@@ -1193,8 +1209,10 @@ exports.rescheduleAppointment = async (req, res) => {
       });
     }
 
-    booking.date = date;
-    booking.bookingDate = moment(date).startOf('day').toDate();
+    const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date.split('T')[0];
+
+    booking.date = dateStr;  // ✅ String date
+    booking.bookingDate = moment(dateStr).startOf('day').toDate();
     booking.slotNumber = parseInt(slotNumber);
     if (timeSlot) booking.timeSlot = timeSlot;
     booking.updatedAt = new Date();
@@ -1341,7 +1359,7 @@ exports.addPrescription = async (req, res) => {
   }
 };
 
-// ================= GENERATE SLOTS FOR DATE RANGE =================
+// ================= GENERATE SLOTS FOR DATE RANGE - FIXED =================
 exports.generateSlotsForDateRange = async (req, res) => {
   try {
     setNoCacheHeaders(res);
@@ -1383,21 +1401,16 @@ exports.generateSlotsForDateRange = async (req, res) => {
         totalSlotsCount
       );
       
-      const startDateObj = moment(dateStr).startOf('day').toDate();
-      const endDateObj = moment(dateStr).endOf('day').toDate();
-      
+      // ✅ FIXED: Delete with string date
       await Slot.deleteMany({ 
         doctorId, 
-        date: {
-          $gte: startDateObj,
-          $lt: endDateObj
-        }
+        date: dateStr  // ✅ String match
       });
       
       for (const slot of generatedSlots) {
         const newSlot = await Slot.create({
           doctorId,
-          date: new Date(dateStr),
+          date: slot.date,  // ✅ Already string from generateSlots
           slotNumber: slot.slotNumber,
           startTime: slot.startTime,
           endTime: slot.endTime,
@@ -1432,10 +1445,12 @@ exports.checkSlotAvailability = async (req, res) => {
     setNoCacheHeaders(res);
     
     const { doctorId, date, slotNumber } = req.params;
+    
+    const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date.split('T')[0];
 
     const booking = await Booking.findOne({
       doctorId,
-      date: date,
+      date: dateStr,  // ✅ String match
       slotNumber: parseInt(slotNumber),
       status: { $ne: 'cancelled' }
     });

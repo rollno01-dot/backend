@@ -9,9 +9,38 @@ const slotSchema = new mongoose.Schema({
     index: true 
   },
   date: { 
-    type: Date, // Changed back to Date type for proper MongoDB queries
+    type: String, // ✅ CHANGED: From Date to String
     required: true,
-    index: true 
+    index: true,
+    set: function(value) {
+      // Convert any date format to YYYY-MM-DD
+      if (!value) return null;
+      if (value instanceof Date) {
+        return value.toISOString().split('T')[0];
+      }
+      if (typeof value === 'string') {
+        // If it has time part, remove it
+        if (value.includes('T')) {
+          return value.split('T')[0];
+        }
+        // If it's already YYYY-MM-DD, return as is
+        if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          return value;
+        }
+        // Try to parse as date
+        const d = new Date(value);
+        if (!isNaN(d.getTime())) {
+          return d.toISOString().split('T')[0];
+        }
+      }
+      return value;
+    },
+    validate: {
+      validator: function(v) {
+        return /^\d{4}-\d{2}-\d{2}$/.test(v);
+      },
+      message: 'Date must be in YYYY-MM-DD format'
+    }
   },
   slotNumber: { 
     type: Number,
@@ -61,7 +90,6 @@ const slotSchema = new mongoose.Schema({
 });
 
 // ⭐ FIXED INDEX - Use compound unique index to prevent duplicates
-// Remove the separate unique index and use a single compound index
 slotSchema.index({ doctorId: 1, date: 1, slotNumber: 1 }, { unique: true });
 
 // Index for faster queries
@@ -72,6 +100,14 @@ slotSchema.index({ bookingId: 1 });
 // Update timestamp on save
 slotSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
+  // Ensure date is string before saving
+  if (this.date && !/^\d{4}-\d{2}-\d{2}$/.test(this.date)) {
+    if (this.date instanceof Date) {
+      this.date = this.date.toISOString().split('T')[0];
+    } else if (typeof this.date === 'string' && this.date.includes('T')) {
+      this.date = this.date.split('T')[0];
+    }
+  }
   next();
 });
 
@@ -151,13 +187,16 @@ slotSchema.statics.generateSlotsForDate = async function(doctorId, date, startTi
   let current = new Date(start);
   let slotNumber = 1;
   
+  // ✅ Ensure date is YYYY-MM-DD string
+  const dateStr = date instanceof Date ? date.toISOString().split('T')[0] : date;
+  
   while (current < end) {
     const slotEnd = new Date(current.getTime() + slotDuration * 60000);
     
     // Skip lunch break
     if (lunchBreak && lunchBreak.start && lunchBreak.end) {
-      const lunchStart = new Date(`${date}T${lunchBreak.start}`);
-      const lunchEnd = new Date(`${date}T${lunchBreak.end}`);
+      const lunchStart = new Date(`${dateStr}T${lunchBreak.start}`);
+      const lunchEnd = new Date(`${dateStr}T${lunchBreak.end}`);
       
       if (current >= lunchStart && current < lunchEnd) {
         current = new Date(lunchEnd);
@@ -168,7 +207,7 @@ slotSchema.statics.generateSlotsForDate = async function(doctorId, date, startTi
     if (slotEnd <= end) {
       slots.push({
         doctorId,
-        date: new Date(date),
+        date: dateStr, // ✅ Changed: store as string, not Date object
         slotNumber: slotNumber++,
         startTime: current.toTimeString().slice(0, 5),
         endTime: slotEnd.toTimeString().slice(0, 5),

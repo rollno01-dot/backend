@@ -21,6 +21,10 @@ const errorMiddleware = require('./src/middleware/error.middleware');
 
 const app = express();
 
+// ============ ⭐ FIX: TRUST PROXY (MUST BE FIRST) ============
+// Enable trust proxy for rate limiting behind a proxy (Render, Nginx, etc.)
+app.set('trust proxy', 1); // Trust first proxy
+
 // ============ ENVIRONMENT VALIDATION ============
 // Check for required environment variables
 const requiredEnvVars = [
@@ -52,14 +56,14 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5000',
   'http://10.94.28.104:5000',
-  'http://192.168.1.4:5000',           // ← ADDED: Local network IP
-  'http://api.sevai.in:5000',          // ← ADDED: Your domain
-  'http://sevai.in:5000',              // ← ADDED: Root domain
+  'http://192.168.1.4:5000',
+  'http://api.sevai.in:5000',
+  'http://sevai.in:5000',
   'http://120.56.90.113:5000',
   'https://sevai.in',
   'https://www.sevai.in',
   'https://api.sevai.in',
-  'https://sevai-api.onrender.com',         // ← ADDED: Your public IP
+  'https://sevai-api.onrender.com',
   process.env.CLIENT_URL
 ].filter(Boolean);
 
@@ -95,7 +99,12 @@ const generalLimiter = rateLimit({
     message: 'Too many requests from this IP, please try again later.'
   },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  // ⭐ FIX: Skip rate limiting for trusted proxies
+  skip: (req) => {
+    // Skip rate limiting for internal requests
+    return req.ip === '127.0.0.1' || req.ip === '::1';
+  }
 });
 app.use('/api', generalLimiter);
 
@@ -108,7 +117,11 @@ const otpLimiter = rateLimit({
     message: 'Too many OTP requests. Please try again after an hour.'
   },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  // ⭐ FIX: Skip rate limiting for trusted proxies
+  skip: (req) => {
+    return req.ip === '127.0.0.1' || req.ip === '::1';
+  }
 });
 
 // Apply OTP rate limiter specifically to OTP routes
